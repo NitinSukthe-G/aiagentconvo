@@ -1,0 +1,42 @@
+{
+  "name": "Amrutha Multispeciality Clinic",
+  "address": "Plot 12, Road No. 3, Banjara Hills, Hyderabad, Telangana 500034",
+  "phone": "+91 40 4567 8900",
+  "timings": {
+    "monday_to_saturday": "9:00 AM - 1:00 PM and 5:00 PM - 9:00 PM",
+    "sunday": "10:00 AM - 1:00 PM (emergency only, call ahead)"
+  },
+  "doctors": [
+    {
+      "doctor_id": "dr_rao",
+      "name": "Dr. Srinivas Rao",
+      "speciality": "General Medicine",
+      "fee": 500,
+      "available_days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    },
+    {
+      "doctor_id": "dr_kavitha",
+      "name": "Dr. Kavitha Reddy",
+      "speciality": "Pediatrics",
+      "fee": 600,
+      "available_days": ["Mon", "Wed", "Fri", "Sat"]
+    },
+    {
+      "doctor_id": "dr_imran",
+      "name": "Dr. Imran Khan",
+      "speciality": "Orthopedics",
+      "fee": 800,
+      "available_days": ["Tue", "Thu", "Sat"]
+    }
+  ],
+  "services": [
+    "General consultation",
+    "Pediatric checkups and vaccination",
+    "Orthopedic consultation and physiotherapy referral",
+    "Basic diagnostics (blood pressure, sugar, ECG)",
+    "Minor wound dressing"
+  ],
+  "parking": "Free two-wheeler and car parking available in the clinic basement.",
+  "insurance": "Cashless treatment accepted for Star Health, HDFC Ergo, and ICICI Lombard. Other insurers reimbursed on request with a receipt.",
+  "payment_methods": ["Cash", "UPI", "Credit/Debit card"]
+}

@@ -1,0 +1,209 @@
+# Deploys to the shared Hetzner box per ~/.claude/NEW-SERVER-RUNBOOK.md.
+#
+# NOT YET DEPLOYED. Before the first push to main:
+#   1. Fill in the .env heredoc below with real values (Meta, Gemini, Mongo Atlas, staff phone).
+#   2. Paste the server's private key into SSH_KEY (see runbook §6 Step 3) — this one step
+#      cannot be done by Claude regardless of permissions.
+#   3. Re-verify APP_PORT is actually free with `ss -ltnp` on the box before trusting 8004.
+#   4. Add the DNS A record for the DOMAIN below (runbook §7).
+#
+# This app runs TWO systemd units from one deploy: the FastAPI webhook service
+# (behind Caddy) and the Redis-queue worker (not HTTP-facing, no Caddy block).
+# Redis itself runs as a native apt package on the same box (see the
+# "Redis (native package)" step) — there is no managed Redis for this app.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-aiagentconvo
+      cancel-in-progress: false
+    env:
+      SSH_HOST: 188.245.251.229
+      SSH_USER: root
+      # 🔴 YOUR STEP — see runbook §6 Step 3. Every line at the SAME 8-space indent, BEGIN/END included.
+      SSH_KEY: |
+                -----BEGIN OPENSSH PRIVATE KEY-----
+                PASTE_YOUR_PRIVATE_KEY_HERE
+                -----END OPENSSH PRIVATE KEY-----
+      DEPLOY_PATH: /opt/aiagentconvo
+      APP_PORT: '8004'
+      PUBLIC_HOST: aiagentconvo.powersmy.biz
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build code tarball
+        run: |
+          tar -czf "${RUNNER_TEMP}/aiagentconvo-code.tar.gz" \
+            --exclude='./.git' --exclude='./.github' --exclude='./__pycache__' \
+            --exclude='*.pyc' --exclude='./.venv' --exclude='./.env' .
+          mv "${RUNNER_TEMP}/aiagentconvo-code.tar.gz" aiagentconvo-code.tar.gz
+          tar -tzf aiagentconvo-code.tar.gz | wc -l
+
+      - name: Upload tarball to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_KEY }}
+          source: aiagentconvo-code.tar.gz
+          target: /tmp/
+          overwrite: true
+          timeout: 30s
+          command_timeout: 5m
+
+      - name: Bootstrap + deploy + restart + verify
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_KEY }}
+          timeout: 30s
+          command_timeout: 20m
+          envs: DEPLOY_PATH,APP_PORT,PUBLIC_HOST
+          script: |
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            export PATH="$HOME/.local/bin:$PATH"
+
+            echo "==> Base tools"
+            apt-get update -qq
+            apt-get install -y -qq curl gpg ca-certificates apt-transport-https \
+              debian-keyring debian-archive-keyring >/dev/null
+
+            echo "==> uv + Python 3.12"
+            command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+            uv python install 3.12
+
+            echo "==> Caddy (automatic HTTPS)"
+            if ! command -v caddy >/dev/null 2>&1; then
+              curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+                | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+              curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+                > /etc/apt/sources.list.d/caddy-stable.list
+              apt-get update -qq && apt-get install -y -qq caddy >/dev/null
+            fi
+
+            echo "==> Redis (native package — this app's only stateful add to the box)"
+            if ! command -v redis-server >/dev/null 2>&1; then
+              apt-get install -y -qq redis-server >/dev/null
+              sed -i 's/^bind .*/bind 127.0.0.1/' /etc/redis/redis.conf
+              systemctl enable --now redis-server
+            fi
+
+            echo "==> Extract code"
+            mkdir -p "$DEPLOY_PATH"
+            tar -xzf /tmp/aiagentconvo-code.tar.gz -C "$DEPLOY_PATH"
+            rm -f /tmp/aiagentconvo-code.tar.gz
+
+            echo "==> venv + dependencies (pyproject.toml has [tool.uv] package = false — this app isn't installed as a package, its modules just run from source)"
+            cd "$DEPLOY_PATH" && uv sync --python 3.12 --no-dev
+
+            echo "==> Write .env (single source of truth: edit HERE and push to change a value)"
+            # 🔴 YOUR STEP — fill in every value below before the first real deploy.
+            cat > "$DEPLOY_PATH/.env" <<'APP_ENV_EOF'
+            PHONE_NUMBER_ID=
+            WABA_ID=
+            ACCESS_TOKEN=
+            APP_SECRET=
+            VERIFY_TOKEN=
+            GEMINI_API_KEY=
+            GEMINI_MODEL=gemini-2.5-flash
+            MONGODB_URI=
+            MONGODB_DB=ai_agent_convo
+            REDIS_URL=redis://127.0.0.1:6379/0
+            STAFF_PHONE=
+            ADMIN_TOKEN=
+            APP_ENV_EOF
+            chmod 600 "$DEPLOY_PATH/.env"
+
+            echo "==> Caddy site block (idempotent — only appends if absent)"
+            if ! grep -q "$PUBLIC_HOST" /etc/caddy/Caddyfile 2>/dev/null; then
+              [ -f /etc/caddy/Caddyfile ] && cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak.$(date +%s)"
+              {
+                echo ""
+                echo "$PUBLIC_HOST {"
+                echo "    reverse_proxy 127.0.0.1:$APP_PORT"
+                echo "    encode gzip"
+                echo "    header {"
+                echo "        Strict-Transport-Security \"max-age=31536000; includeSubDomains\""
+                echo "        X-Content-Type-Options    \"nosniff\""
+                echo "        X-Frame-Options           \"SAMEORIGIN\""
+                echo "        Referrer-Policy           \"strict-origin-when-cross-origin\""
+                echo "    }"
+                echo "}"
+              } >> /etc/caddy/Caddyfile
+            fi
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1
+            systemctl reload caddy 2>/dev/null || systemctl restart caddy
+
+            echo "==> systemd unit: web (overwritten every deploy)"
+            {
+              echo "[Unit]"
+              echo "Description=aiagentconvo web"
+              echo "After=network-online.target"
+              echo "Wants=network-online.target"
+              echo ""
+              echo "[Service]"
+              echo "Type=simple"
+              echo "User=root"
+              echo "WorkingDirectory=$DEPLOY_PATH"
+              echo "ExecStart=$DEPLOY_PATH/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $APP_PORT --workers 2 --proxy-headers --forwarded-allow-ips=* --timeout-graceful-shutdown 30"
+              echo "Restart=on-failure"
+              echo "RestartSec=5"
+              echo "StandardOutput=journal"
+              echo "StandardError=journal"
+              echo ""
+              echo "[Install]"
+              echo "WantedBy=multi-user.target"
+            } > /etc/systemd/system/aiagentconvo.service
+
+            echo "==> systemd unit: worker (Redis-queue consumer, not HTTP-facing, no Caddy block)"
+            {
+              echo "[Unit]"
+              echo "Description=aiagentconvo worker"
+              echo "After=network-online.target redis-server.service"
+              echo "Wants=network-online.target"
+              echo ""
+              echo "[Service]"
+              echo "Type=simple"
+              echo "User=root"
+              echo "WorkingDirectory=$DEPLOY_PATH"
+              echo "ExecStart=$DEPLOY_PATH/.venv/bin/python -m workers.queue"
+              echo "Restart=on-failure"
+              echo "RestartSec=5"
+              echo "StandardOutput=journal"
+              echo "StandardError=journal"
+              echo ""
+              echo "[Install]"
+              echo "WantedBy=multi-user.target"
+            } > /etc/systemd/system/aiagentconvo-worker.service
+
+            systemctl daemon-reload
+            systemctl enable aiagentconvo aiagentconvo-worker >/dev/null 2>&1 || true
+            systemctl restart aiagentconvo
+            systemctl restart aiagentconvo-worker
+
+            echo "==> Health check — fails the run WITH logs if the web unit didn't come up"
+            HEALTHY=0
+            for i in $(seq 1 45); do
+              if curl -sf "http://127.0.0.1:$APP_PORT/health" >/dev/null 2>&1; then
+                curl -s "http://127.0.0.1:$APP_PORT/health"; echo; HEALTHY=1; break
+              fi
+              sleep 2
+            done
+            [ "$HEALTHY" = "1" ] || { journalctl -u aiagentconvo --no-pager -n 60; exit 1; }
+
+            echo "==> Worker sanity check — must still be active a few seconds in"
+            sleep 3
+            systemctl is-active --quiet aiagentconvo-worker || { journalctl -u aiagentconvo-worker --no-pager -n 60; exit 1; }
+
+            echo "==> Deploy complete"
