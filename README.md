@@ -185,13 +185,3 @@ queue consumer, not HTTP-facing). Redis runs as a native `apt` package on
 the same box — the box currently hosts no stateful services, and this app's
 Redis usage is small enough that a managed service would be pure overhead.
 
-## Interview prep — things to be able to explain
-
-- Why the webhook returns 200 before doing any real work.
-- Why dedupe keys on the WhatsApp message id, not anything the bot itself generates.
-- Why booking goes through a button tap instead of the model just calling the tool from free text.
-- How the atomic slot update prevents double-booking without a lock table.
-- What happens when a tool raises inside the agent loop (`_dispatch_tool` catches it and feeds the model a `{"error": ...}` function response, so the model can react instead of the webhook 500ing).
-- How handoff turns off the bot and how `/admin/release/{phone}` turns it back on.
-- Why language detection is cached instead of run on every message, and why Hinglish and Telugu each need their own script rule.
-- What a booking conversation costs on Gemini, and where that number is measured (`services/costs.py`, backed by every response's real `usage_metadata` — not estimated).
