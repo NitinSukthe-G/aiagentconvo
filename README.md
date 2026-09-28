@@ -184,4 +184,4 @@ The deploy runs **two** systemd units from one workflow: `aiagentconvo`
 queue consumer, not HTTP-facing). Redis runs as a native `apt` package on
 the same box — the box currently hosts no stateful services, and this app's
 Redis usage is small enough that a managed service would be pure overhead.
----
+
